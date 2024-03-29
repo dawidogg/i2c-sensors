@@ -1,6 +1,0 @@
-#ifndef I2C_COMMANDS
-#define I2C_COMMANDS
-
-#define CMD_TEMPHUM_SINGLESHOT 0x2400
-
-#endif
