@@ -130,11 +130,12 @@ void sensors_configure() {
     gpio_intr_enable(MAX30100_INT_PIN);
 }
 
-void sensors_read_task(void *args) {
+void sensors_read(void) {
     uint8_t command[4] = {};
     uint8_t temp[10] = {};
     uint8_t max30100_fifo_wr_ptr = 0; 
     uint8_t max30100_fifo_rd_ptr = 0;
+
     while (1) {
         // SHT3X
         // Reading humidity
@@ -143,15 +144,14 @@ void sensors_read_task(void *args) {
         i2c_master_transmit(dev_handle[SHT3X], command, 2, -1); 
         DELAYMS(2);
         i2c_master_receive(dev_handle[SHT3X], temp, 6, -1);
-        printf("Read from sht3x: %d %d %d %d\n", temp[0], temp[1], temp[2], temp[3]);
         uint16_t sht3x_srh = (((uint16_t)temp[3]) << 8) | temp[4];
         float sht3x_rh = 0;
 
         // Checksum 
-        //if (sht3x_crc(sht3x_srh, temp[5] == SHT3X_INITIAL_CRC)) {
+        if (sht3x_crc(sht3x_srh, temp[5] == SHT3X_INITIAL_CRC)) {
             // Relative humiditiy
             sht3x_rh = 100.0 * (float)(sht3x_srh) / (float)((1 << 16) - 1);
-        //}
+        }
 
         // BMP180 
         command[0] = 0xF4;
@@ -176,10 +176,11 @@ void sensors_read_task(void *args) {
 
         // MAX30100
         if (xSemaphoreTake(max30100_sema_handle, 0) == pdTRUE) {
-            command[0] = 0x00;
-            i2c_master_transmit(dev_handle[MAX30100], command, 1, -1);
-            i2c_master_receive(dev_handle[MAX30100], command, 1, -1);
             uint8_t num_available_samples;
+            // Third transaction: Write to FIFO_RD_PTR register.
+            command[0] = 0x04; // FIFO_RD_PTR address
+            i2c_master_transmit(dev_handle[MAX30100], command, 1, -1);
+            i2c_master_receive(dev_handle[MAX30100], &max30100_fifo_rd_ptr, 1, -1);
 
             // First transaction: Get the FIFO_WR_PTR:
             command[0] = 0x02; // FIFO_WR_PTR address
@@ -188,9 +189,9 @@ void sensors_read_task(void *args) {
 
             // Second transaction: Read NUM_SAMPLES_TO_READ samples from the FIFO
             if (max30100_fifo_wr_ptr <= max30100_fifo_rd_ptr)
-                max30100_fifo_wr_ptr += 0x10;
+                max30100_fifo_wr_ptr += 0xf;
             num_available_samples = max30100_fifo_wr_ptr - max30100_fifo_rd_ptr;
-
+            
             command[0] = 0x05; // FIFO_DATA address
             for (int i = 0; i < num_available_samples; i++) {
                 uint8_t temp[4];
@@ -206,10 +207,6 @@ void sensors_read_task(void *args) {
             }
             printf("\n");
 
-            // Third transaction: Write to FIFO_RD_PTR register.
-            command[0] = 0x04; // FIFO_RD_PTR address
-            i2c_master_transmit(dev_handle[MAX30100], command, 1, -1);
-            i2c_master_receive(dev_handle[MAX30100], &max30100_fifo_rd_ptr, 1, -1);
         }
         DELAYMS(500);
     }
@@ -235,7 +232,7 @@ void app_main(void) {
     max30100_sema_handle = xSemaphoreCreateBinary();
 
     sensors_configure();
-    xTaskCreate(sensors_read_task, "SENSORS_TASK", 4096, NULL, 0, &sensors_read_task_handle);
+    sensors_read();
 }
 
 // idf.py -B build.clang -D IDF_TOOLCHAIN=clang reconfigure
