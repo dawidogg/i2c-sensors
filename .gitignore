@@ -3,4 +3,4 @@ build.clang/
 .cache/
 sdkconfig.old
 includes.txt
-
+crc.c
