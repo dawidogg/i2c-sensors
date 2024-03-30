@@ -84,7 +84,6 @@ uint8_t sht3x_crc(uint16_t data, uint8_t crc) {
 uint8_t intr_count = 0;
 uint16_t bmp180_eeprom[11] = {};
 
-
 void max30100_irq(void *arg) {
     xSemaphoreGiveFromISR(max30100_sema_handle, NULL);
 }
@@ -162,17 +161,17 @@ void sensors_read(void) {
         i2c_master_transmit(dev_handle[BMP180], &command[0], 1, -1); 
         i2c_master_receive(dev_handle[BMP180], temp, 3, -1);
         // Uncompensated temperature value
-        uint16_t bmp180_ut =  (((uint16_t)temp[0]) << 8) | temp[1];
-        float x1 = ((float)(bmp180_ut - bmp180_eeprom[AC6])*bmp180_eeprom[AC5]) / (float)(1 << 15);
-        float x2 = (float)(bmp180_eeprom[MC] << 11) / (float)(x1 + bmp180_eeprom[MD]);
-        float b5 = x1 + x2;
+        long bmp180_ut =  (((uint16_t)temp[0]) << 8) | (uint16_t)temp[1];
+        long x1 = ((bmp180_ut - (unsigned short)bmp180_eeprom[AC6])*(unsigned short)bmp180_eeprom[AC5]) / (1 << 15);
+        long x2 = ((short)bmp180_eeprom[MC] << 11) / (x1 + (short)bmp180_eeprom[MD]);
+        long b5 = x1 + x2;
         // True temperature
-        float bmp180_t = (float)(b5 + 8) / (float)(1 << 4) / 10;
+        float bmp180_t = (float)((b5 + 8) / (1 << 4)) / 10.0;
     
         if (sht3x_rh != 0)
             xQueueSend(humidity_queue, &sht3x_rh, portMAX_DELAY);
         xQueueSend(temperature_queue, &bmp180_t, portMAX_DELAY);
-        printf("Relative humidity: %f%%\n Temperature: %f\n", sht3x_rh, bmp180_t);
+        printf("Humidity: %f%%\nTemperature: %f\n", sht3x_rh, bmp180_t);
 
         // MAX30100
         if (xSemaphoreTake(max30100_sema_handle, 0) == pdTRUE) {
@@ -191,10 +190,11 @@ void sensors_read(void) {
             if (max30100_fifo_wr_ptr <= max30100_fifo_rd_ptr)
                 max30100_fifo_wr_ptr += 0xf;
             num_available_samples = max30100_fifo_wr_ptr - max30100_fifo_rd_ptr;
-            
-            command[0] = 0x05; // FIFO_DATA address
+           
+            printf("Heart rate: ");
             for (int i = 0; i < num_available_samples; i++) {
                 uint8_t temp[4];
+                command[0] = 0x05; // FIFO_DATA address
                 i2c_master_transmit(dev_handle[MAX30100], command, 1, -1);
                 for (int j = 0; j < 4; j++) {
                     i2c_master_receive(dev_handle[MAX30100], temp+j, 1, -1);
