@@ -2,5 +2,6 @@ build/
 build.clang/
 .cache/
 sdkconfig.old
+sdkconfig
+CMakeFiles/
 includes.txt
-crc.c
