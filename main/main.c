@@ -29,7 +29,7 @@ void app_main(void) {
     humidity_queue = xQueueCreate(128, sizeof(float));
     temperature_queue = xQueueCreate(128, sizeof(float));
     heart_queue = xQueueCreate(128, sizeof(float));
-    xTaskCreate(collect_queues_task, "COLLECT_QUEUES", 4096, NULL, 0, &collect_queues_task_handle);
+    xTaskCreate(collect_queues_task, "COLLECT_QUEUES", 4096, NULL, 1, &collect_queues_task_handle);
     sensors_configure();
     sensors_read();
 }
