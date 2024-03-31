@@ -1,13 +1,18 @@
+// Borda Academy 2024 
+// Embedded Systems Developer Intern & New Graduate Candidate Assignment
+// Author: Denis Davidoglu
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "hal/i2c_types.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+
 #include "i2c.h"
 #include "config.h"
 
 #define SHT3X_INITIAL_CRC 0xff
+#define DELAY_MS(x) vTaskDelay((x) / portTICK_PERIOD_MS)
 
 typedef enum {
     SHT3X, BMP180, MAX30100, 

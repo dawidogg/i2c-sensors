@@ -1,11 +1,10 @@
 // Borda Academy 2024 
 // Embedded Systems Developer Intern & New Graduate Candidate Assignment
 // Author: Denis Davidoglu
-#ifndef MY_I2C
-#define MY_I2C
+#include "driver/gptimer.h"
+#ifndef MY_QUEUE
+#define MY_QUEUE
 
-int i2c_init(); 
-void sensors_configure();
-void sensors_read(); 
+void collect_queues_task(void*); 
 
-#endif // MY_I2C
+#endif // MY_QUEUE

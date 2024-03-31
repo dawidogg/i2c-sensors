@@ -1,7 +1,11 @@
-#include "filter.h"
+// Borda Academy 2024 
+// Embedded Systems Developer Intern & New Graduate Candidate Assignment
+// Author: Denis Davidoglu
 #include "esp_random.h"
 #include "xtensa/hal.h"
 #include <math.h>
+
+#include "filter.h"
 
 void swap_f(float *a, float *b) {
     float c = *a;

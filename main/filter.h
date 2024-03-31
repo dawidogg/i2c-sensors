@@ -1,5 +1,7 @@
+// Borda Academy 2024 
+// Embedded Systems Developer Intern & New Graduate Candidate Assignment
+// Author: Denis Davidoglu
 #include <stdlib.h>
-
 #ifndef MY_FILTER
 #define MY_FILTER
 
