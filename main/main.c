@@ -1,4 +1,3 @@
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "esp_intr_alloc.h"
@@ -15,12 +14,54 @@
 #include "portmacro.h"
 #include "xtensa/hal.h"
 #include "driver/gptimer.h"
+#include <math.h>
 
-#define DELAYMS(x) vTaskDelay((x) / portTICK_PERIOD_MS)
+// Configuration
 #define I2C_SCL_PIN 22
 #define I2C_SDA_PIN 23
 #define MAX30100_INT_PIN 19
+#define SAMPLING_RATE 1 // Hz 
+#define BLE_OUTPUT_RATE 30 // seconds
 
+// My type definitions
+typedef enum {
+    SHT3X, BMP180, MAX30100, 
+} sensor_id_t;
+
+typedef enum {
+    AC1, AC2, AC3, AC4, AC5, AC6, B1, B2, MB, MC, MD,
+} bmp180_eeprom_t;
+
+typedef struct {
+    char name[16];
+    float stddev;
+    float max;
+    float min;
+    float median;
+} ble_packet_t;
+
+// My functions
+void max30100_irq(void*); 
+void sensors_configure(); 
+void sensors_read(); 
+void swap_f(float*, float*); 
+float find_rank(float*, uint16_t, uint16_t);
+void filter_sensor_value(float*, uint16_t, uint16_t); 
+float find_stddev(float*, uint16_t);
+static bool output(gptimer_handle_t, const gptimer_alarm_event_data_t*, void*);
+void collect_queues_task(void*); 
+void ble_transmit_packet(ble_packet_t*, uint8_t);
+void app_main(void);
+
+// My define's
+#define DELAY_MS(x) vTaskDelay((x) / portTICK_PERIOD_MS)
+#define SHT3X_INITIAL_CRC 0xff
+#define find_median(array, size) find_rank((array), (size), (size)/2)
+#define find_min(array, size) find_rank((array), (size), 0)
+#define find_max(array, size) find_rank((array), (size), (size)-1)
+
+// I2C related definitions
+i2c_master_bus_handle_t bus_handle;
 i2c_master_bus_config_t i2c_config = {
     .clk_source = I2C_CLK_SRC_DEFAULT,
     .i2c_port = -1,
@@ -29,58 +70,44 @@ i2c_master_bus_config_t i2c_config = {
     .glitch_ignore_cnt = 7,
     .flags.enable_internal_pullup = false,
 };
-
-i2c_master_bus_handle_t bus_handle;
-
-typedef enum {
-    SHT3X,
-    BMP180,
-    MAX30100,
-} sensor_id_t;
-
-typedef enum {
-    AC1, AC2, AC3, AC4, AC5, AC6, B1, B2, MB, MC, MD,
-} bmp180_eeprom_t;
-
 i2c_device_config_t dev_config[] = {
     { 
-    .dev_addr_length = I2C_ADDR_BIT_7,
-    .device_address = 0x44,
-    .scl_speed_hz = 100000,
+        .dev_addr_length = I2C_ADDR_BIT_7,
+        .device_address = 0x44,
+        .scl_speed_hz = 100000,
     },
     {
-    .dev_addr_length = I2C_ADDR_BIT_7,
-    .device_address = 0x77,
-    .scl_speed_hz = 100000,
+        .dev_addr_length = I2C_ADDR_BIT_7,
+        .device_address = 0x77,
+        .scl_speed_hz = 100000,
     },
     {
-    .dev_addr_length = I2C_ADDR_BIT_7, 
-    .device_address = 0x57,
-    .scl_speed_hz = 100000,
+        .dev_addr_length = I2C_ADDR_BIT_7, 
+        .device_address = 0x57,
+        .scl_speed_hz = 100000,
     },
 };
-static int dev_count = sizeof(dev_config)/sizeof(i2c_device_config_t);
-
+const int dev_count = sizeof(dev_config)/sizeof(i2c_device_config_t);
 i2c_master_dev_handle_t dev_handle[10];
 
+// Timer related definitions
 gptimer_handle_t output_timer_handle = NULL;
 gptimer_config_t output_timer_config = {
     .clk_src = GPTIMER_CLK_SRC_DEFAULT,
     .direction = GPTIMER_COUNT_UP,
-    .resolution_hz = 1000*1000, // 1Hz
+    .resolution_hz = 1000000, 
 };
 gptimer_alarm_config_t output_alarm_config = {
     .reload_count = 0, 
-    .alarm_count = 1000*1000*1, // period = 1s 
+    .alarm_count = 1000000*BLE_OUTPUT_RATE, // period = 1s 
     .flags.auto_reload_on_alarm = true, 
 };
-
-static bool output(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx); 
 
 gptimer_event_callbacks_t output_callbacks = {
     .on_alarm = output,
 };
 
+// FreeRTOS handles
 QueueHandle_t humidity_queue;
 QueueHandle_t temperature_queue;
 QueueHandle_t heart_queue;
@@ -88,14 +115,11 @@ TaskHandle_t collect_queues_task_handle;
 SemaphoreHandle_t max30100_sema_handle;
 SemaphoreHandle_t output_sema_handle;
 
-#define SHT3X_INITIAL_CRC 0xff
-
-uint16_t bmp180_eeprom[11] = {};
-
 void max30100_irq(void *arg) {
     xSemaphoreGiveFromISR(max30100_sema_handle, NULL);
 }
 
+uint16_t bmp180_eeprom[11] = {};
 void sensors_configure() {
     uint8_t command[2] = {};
     uint8_t temp[6] = {};
@@ -108,17 +132,20 @@ void sensors_configure() {
         i2c_master_transmit(dev_handle[BMP180], command, 1, -1); 
         i2c_master_receive(dev_handle[BMP180], temp, 2, -1);
         bmp180_eeprom[i] = (((uint16_t)temp[0]) << 8) | temp[1];
-        printf("%d\n", bmp180_eeprom[i]);
         i++;  
     }
 
     // MAX30100
     command[0] = 0x06; // MODE address
-    command[1] = 0x02; // Heart rate only enabled
+    command[1] = 0x02; // Only heart rate enabled
     i2c_master_transmit(dev_handle[MAX30100], command, 2, -1);
 
     command[0] = 0x07; // SPO2 configuration
-    command[1] = 0x0F; // highest resolution (16 bits)
+    command[1] = (1 << 1) | (1 << 0); // LED_PW[1:0] = 11 (16 bit resolution)
+    i2c_master_transmit(dev_handle[MAX30100], command, 2, -1);
+
+    command[0] = 0x09; // LED configuration address
+    command[1] = 0x0f; // maximum current for IR LED
     i2c_master_transmit(dev_handle[MAX30100], command, 2, -1);
 
     command[0] = 0x01; // Enabling interrupt
@@ -128,8 +155,8 @@ void sensors_configure() {
     command[0] = 0x00; // Clearing pending interrupt
     i2c_master_transmit(dev_handle[MAX30100], command, 1, -1);
     i2c_master_receive(dev_handle[MAX30100], command, 1, -1);
-    printf("Interrupt register: 0x%x\n", command[0]);
-
+    
+    // Hooking interrupt to MAX30100_INT_PIN
     gpio_set_direction(MAX30100_INT_PIN, GPIO_MODE_INPUT);
     gpio_set_intr_type(MAX30100_INT_PIN, GPIO_INTR_NEGEDGE); 
     gpio_install_isr_service(ESP_INTR_FLAG_SHARED);
@@ -150,7 +177,7 @@ uint8_t sht3x_crc(uint16_t data, uint8_t crc) {
     return padded_data;  
 }
 
-void sensors_read(void) {
+void sensors_read() {
     uint8_t command[4] = {};
     uint8_t temp[10] = {};
     uint8_t max30100_fifo_wr_ptr = 0; 
@@ -158,15 +185,15 @@ void sensors_read(void) {
 
     while (1) {
         // SHT3X
-        // Reading humidity
+        // Request measurement
         command[0] = 0x24; 
         command[1] = 0x00; 
         i2c_master_transmit(dev_handle[SHT3X], command, 2, -1); 
-        DELAYMS(2);
+        DELAY_MS(1);
+        // Read humidity
         i2c_master_receive(dev_handle[SHT3X], temp, 6, -1);
         uint16_t sht3x_srh = (((uint16_t)temp[3]) << 8) | temp[4];
         float sht3x_rh = 0;
-
         // Checksum 
         if (sht3x_crc(sht3x_srh, temp[5] == SHT3X_INITIAL_CRC)) {
             // Relative humiditiy
@@ -174,10 +201,12 @@ void sensors_read(void) {
         }
 
         // BMP180 
+        // Request measurement
         command[0] = 0xF4;
         command[1] = 0x2E;
         i2c_master_transmit(dev_handle[BMP180], &command[0], 2, -1); 
-        DELAYMS(5);
+        DELAY_MS(5);
+        // Read temperature
         command[0] = 0xF6;
         i2c_master_transmit(dev_handle[BMP180], &command[0], 1, -1); 
         i2c_master_receive(dev_handle[BMP180], temp, 3, -1);
@@ -192,7 +221,6 @@ void sensors_read(void) {
         if (sht3x_rh != 0)
             xQueueSend(humidity_queue, &sht3x_rh, portMAX_DELAY);
         xQueueSend(temperature_queue, &bmp180_t, portMAX_DELAY);
-        printf("Humidity: %f%%\nTemperature: %f\n", sht3x_rh, bmp180_t);
 
         // MAX30100
         if (xSemaphoreTake(max30100_sema_handle, 0) == pdTRUE) {
@@ -209,10 +237,9 @@ void sensors_read(void) {
 
             // Second transaction: Read NUM_SAMPLES_TO_READ samples from the FIFO
             if (max30100_fifo_wr_ptr <= max30100_fifo_rd_ptr)
-                max30100_fifo_wr_ptr += 0xf;
+                max30100_fifo_wr_ptr += 0x10;
             num_available_samples = max30100_fifo_wr_ptr - max30100_fifo_rd_ptr;
-           
-            printf("Heart rate: ");
+
             for (int i = 0; i < num_available_samples; i++) {
                 uint8_t temp[4];
                 command[0] = 0x05; // FIFO_DATA address
@@ -220,16 +247,11 @@ void sensors_read(void) {
                 for (int j = 0; j < 4; j++) {
                     i2c_master_receive(dev_handle[MAX30100], temp+j, 1, -1);
                 }
-                uint16_t max30100_ir = ((uint16_t)temp[0] << 8) | temp[1];
-                // In heart-rate only mode, the 3rd and 4th bytes of each sample return zeros,
-                // max30100_red = ((uint16_t)temp[2] << 8) | temp[3];
+                float max30100_ir = ((uint16_t)temp[0] << 8) | temp[1];
                 xQueueSend(heart_queue, &max30100_ir, portMAX_DELAY); 
-                printf("%d ", max30100_ir);
             }
-            printf("\n");
-
         }
-        DELAYMS(500);
+        DELAY_MS(1000/SAMPLING_RATE);
     }
 }
 
@@ -239,7 +261,7 @@ void swap_f(float *a, float *b) {
     *b = c;
 }
 
-float find_median_select(float *array, uint8_t size, uint8_t k) {
+float find_rank(float *array, uint16_t size, uint16_t k) {
     if (size == 1) return array[0];
     // Place randomly selected pivot to the beginning of array
     swap_f(array, array + (esp_random()%size));
@@ -259,15 +281,11 @@ float find_median_select(float *array, uint8_t size, uint8_t k) {
     swap_f(array, array + pointer2);
     // Recurse
     if (pointer2 >= k)
-        return find_median_select(array, pointer2 + 1, k);
-    return find_median_select(array + pointer2 + 1, size - pointer2 - 1, k - pointer2 - 1);
+        return find_rank(array, pointer2 + 1, k);
+    return find_rank(array + pointer2 + 1, size - pointer2 - 1, k - pointer2 - 1);
 }
 
-float find_median(float *array, uint8_t size) {
-    return find_median_select(array, size, size/2);
-}
-
-void filter_sensor_value(float *array, uint16_t size, uint8_t window_size) {
+void filter_sensor_value(float *array, uint16_t size, uint16_t window_size) {
     float filtered_array[size];
     for (int i = 0; i < size; i++) {
         float window[2*window_size + 1];
@@ -281,18 +299,34 @@ void filter_sensor_value(float *array, uint16_t size, uint8_t window_size) {
     xthal_memcpy(array, filtered_array, sizeof(float)*size);
 }
 
+float find_stddev(float *array, uint16_t size) {
+    float mean = 0;
+    float result = 0;
+    for (uint16_t i = 0; i < size; i++)
+        mean += array[i];
+    mean /= (float)size;
+    for (uint16_t i = 0; i < size; i++)
+        result += powf((array[i] - mean), 2); 
+    result /= (float)size;
+    result = sqrt(result);
+    return result;
+}
+
 static bool output(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx) {
     xSemaphoreGiveFromISR(output_sema_handle, NULL);
     return true;
 }
 
 void collect_queues_task(void *args) {
-    const uint16_t temperature_buffer_size = 10;
-    const uint16_t humidity_buffer_size = 10;
-    const uint16_t heart_buffer_size = 10;
-    float temperature_buffer[temperature_buffer_size];
-    float humidity_buffer[humidity_buffer_size];
-    float heart_buffer[heart_buffer_size];
+    const uint16_t t_max_size = 10;
+    const uint16_t hu_max_size = 10;
+    const uint16_t he_max_size = 10;
+    float temperature_buffer[t_max_size];
+    float humidity_buffer[hu_max_size];
+    float heart_buffer[he_max_size];
+    uint16_t t_size = 0;
+    uint16_t hu_size = 0;
+    uint16_t he_size = 0;
     uint16_t i = 0, j = 0, k = 0;
 
     output_sema_handle = xSemaphoreCreateBinary();
@@ -304,36 +338,57 @@ void collect_queues_task(void *args) {
 
     while (1) {
         if (xQueueReceive(temperature_queue, temperature_buffer + i, 0) == pdTRUE) {
-            i = (i + 1) % temperature_buffer_size;
+            i = (i + 1) % t_max_size;
+            if (t_size < t_max_size) t_size++;
         }
         if (xQueueReceive(humidity_queue, humidity_buffer + j, 0) == pdTRUE) {
-            j = (j + 1) % humidity_buffer_size;
+            j = (j + 1) % hu_max_size;
+            if (hu_size < hu_max_size) hu_size++;
         }
         if (xQueueReceive(heart_queue, heart_buffer + k, 0) == pdTRUE) {
-            k = (k + 1) % heart_buffer_size;
+            k = (k + 1) % he_max_size;
+            if (he_size < he_max_size) he_size++;
         }
         if (xSemaphoreTake(output_sema_handle, 0) == pdTRUE) {
-            printf("\nHello from timer\n");
-            filter_sensor_value(temperature_buffer, temperature_buffer_size, 1);
-            filter_sensor_value(humidity_buffer, humidity_buffer_size, 1);
-            filter_sensor_value(heart_buffer, heart_buffer_size, 1);
-            printf("Temperature: ");
-            for (int i = 0; i < 10; i++) {
-                printf("%f ", temperature_buffer[i]);
-            } 
-            printf("\n");
-            printf("Humidity: ");
-            for (int i = 0; i < 10; i++) {
-                printf("%f ", humidity_buffer[i]);
-            } 
-            printf("\n");
-            printf("Heart rate: ");
-            for (int i = 0; i < 10; i++) {
-                printf("%f ", heart_buffer[i]);
-            } 
-            printf("\n\n");
+            filter_sensor_value(temperature_buffer, t_size, 1);
+            filter_sensor_value(humidity_buffer, hu_size, 1);
+            filter_sensor_value(heart_buffer, he_size, 1);
+            
+            ble_packet_t packet[3] = {
+                {
+                    .name = "Temperature",
+                    .stddev = find_stddev(temperature_buffer, t_size),
+                    .max = find_max(temperature_buffer, t_size),
+                    .min = find_min(temperature_buffer, t_size),
+                    .median = find_median(temperature_buffer, t_size),
+                },
+                {
+                    .name = "Humidity",
+                    .stddev = find_stddev(humidity_buffer, hu_size),
+                    .max = find_max(humidity_buffer, hu_size),
+                    .min = find_min(humidity_buffer, hu_size),
+                    .median = find_median(humidity_buffer, hu_size),
+                },
+                {
+                    .name = "Heart rate",
+                    .stddev = find_stddev(heart_buffer, he_size),
+                    .max = find_max(heart_buffer, he_size),
+                    .min = find_min(heart_buffer, he_size),
+                    .median = find_median(heart_buffer, he_size),
+                },
+            };
+            ble_transmit_packet(packet, 3);
         }
     }
+}
+
+void ble_transmit_packet(ble_packet_t *packet, uint8_t size) {
+    printf("| %16s | %16s | %16s | %16s | %16s |\n", "Name", "Stddev", "Max", "Min", "Median");
+    printf("+------------------+------------------+------------------+------------------+------------------+\n");
+    for (uint8_t i = 0; i < size; i++) {
+        printf("| %16s | %16f | %16f | %16f | %16f |\n", packet[i].name, packet[i].stddev, packet[i].max, packet[i].min, packet[i].median);
+    }
+    printf("\n");
 }
 
 void app_main(void) {
@@ -357,5 +412,3 @@ void app_main(void) {
     sensors_configure();
     sensors_read();
 }
-
-// idf.py -B build.clang -D IDF_TOOLCHAIN=clang reconfigure
