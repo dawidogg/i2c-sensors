@@ -10,13 +10,12 @@
 #include "freertos/semphr.h"
 #include "driver/gpio.h"
 #include "hal/gpio_types.h"
-#include "esp_random.h"
 #include "portmacro.h"
-#include "xtensa/hal.h"
 #include "driver/gptimer.h"
-#include <math.h>
-#include "i2c.h"
+
 #include "config.h"
+#include "i2c.h"
+#include "filter.h"
 
 // My type definitions
 typedef struct {
@@ -28,20 +27,10 @@ typedef struct {
 } ble_packet_t;
 
 // My functions
-void swap_f(float*, float*); 
-float find_rank(float*, uint16_t, uint16_t);
-void filter_sensor_value(float*, uint16_t, uint16_t); 
-float find_stddev(float*, uint16_t);
 static bool output_irq(gptimer_handle_t, const gptimer_alarm_event_data_t*, void*);
 void collect_queues_task(void*); 
 void ble_transmit_packet(ble_packet_t*, uint8_t);
 void app_main(void);
-
-// My define's
-
-#define find_median(array, size) find_rank((array), (size), (size)/2)
-#define find_min(array, size) find_rank((array), (size), 0)
-#define find_max(array, size) find_rank((array), (size), (size)-1)
 
 // Timer related definitions
 gptimer_handle_t output_timer_handle = NULL;
@@ -66,66 +55,6 @@ QueueHandle_t temperature_queue;
 QueueHandle_t heart_queue;
 TaskHandle_t collect_queues_task_handle;
 SemaphoreHandle_t output_sema_handle;
-
-void swap_f(float *a, float *b) {
-    float c = *a;
-    *a = *b;
-    *b = c;
-}
-
-float find_rank(float *array, uint16_t size, uint16_t k) {
-    if (size == 0) return 0;
-    if (size == 1) return array[0];
-    // Place randomly selected pivot to the beginning of array
-    swap_f(array, array + (esp_random()%size));
-    uint16_t pointer1 = 1;
-    uint16_t pointer2 = size-1;
-
-    // Partition
-    while (pointer1 <= pointer2) {
-        if (array[pointer1] < array[0]) {
-            pointer1++;
-        } else {
-            swap_f(array + pointer1, array + pointer2);
-            pointer2--;
-        }
-    }
-    // Put the pivot in the right place
-    swap_f(array, array + pointer2);
-    // Recurse
-    if (pointer2 >= k)
-        return find_rank(array, pointer2 + 1, k);
-    return find_rank(array + pointer2 + 1, size - pointer2 - 1, k - pointer2 - 1);
-}
-
-void filter_sensor_value(float *array, uint16_t size, uint16_t window_size) {
-    float filtered_array[size];
-    for (int i = 0; i < size; i++) {
-        float window[2*window_size + 1];
-        window[window_size] = array[i];
-        for (int j = 0; j < window_size; j++) {
-            window[j] = array[(i - 1 - j + size) % size];
-            window[window_size + j + 1] = array[(i + j) % size];
-        }
-        filtered_array[i] = find_median(window, 2*window_size + 1);
-    }
-    xthal_memcpy(array, filtered_array, sizeof(float)*size);
-}
-
-float find_stddev(float *array, uint16_t size) {
-    float result = 0;
-    if (size != 0) {
-        float mean = 0;
-        for (uint16_t i = 0; i < size; i++)
-            mean += array[i];
-        mean /= (float)size;
-        for (uint16_t i = 0; i < size; i++)
-            result += powf((array[i] - mean), 2); 
-        result /= (float)size;
-        result = sqrt(result);
-    }
-    return result;
-}
 
 static bool output_irq(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx) {
     xSemaphoreGiveFromISR(output_sema_handle, NULL);
