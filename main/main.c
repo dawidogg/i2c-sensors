@@ -1,3 +1,6 @@
+// Borda Academy 2024 
+// Author: Denis Davidoglu
+
 #include <stdio.h>
 #include <stdlib.h>
 #include "esp_intr_alloc.h"
@@ -48,7 +51,7 @@ void swap_f(float*, float*);
 float find_rank(float*, uint16_t, uint16_t);
 void filter_sensor_value(float*, uint16_t, uint16_t); 
 float find_stddev(float*, uint16_t);
-static bool output(gptimer_handle_t, const gptimer_alarm_event_data_t*, void*);
+static bool output_irq(gptimer_handle_t, const gptimer_alarm_event_data_t*, void*);
 void collect_queues_task(void*); 
 void ble_transmit_packet(ble_packet_t*, uint8_t);
 void app_main(void);
@@ -104,7 +107,7 @@ gptimer_alarm_config_t output_alarm_config = {
 };
 
 gptimer_event_callbacks_t output_callbacks = {
-    .on_alarm = output,
+    .on_alarm = output_irq,
 };
 
 // FreeRTOS handles
@@ -312,7 +315,7 @@ float find_stddev(float *array, uint16_t size) {
     return result;
 }
 
-static bool output(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx) {
+static bool output_irq(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx) {
     xSemaphoreGiveFromISR(output_sema_handle, NULL);
     return true;
 }
