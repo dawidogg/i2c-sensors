@@ -6,8 +6,7 @@ For this assignment, I chose to develop firmware for an Espressif ESP32
 microcontroller using its native development framework, ESP-IDF. My code
 is written 100% in the C programming language, relying on ESP-IDF's
 extensive API and FreeRTOS.
-Figure [1](#fig:breadboard){reference-type="ref"
-reference="fig:breadboard"} shows my breadboard circuit with the
+Figure [1](#fig:breadboard) shows my breadboard circuit with the
 microcontroller and three I2C sensors. The inner horizontal rails are
 meant for delivering power, while the outer horizontal rails are for the
 I2C bus. Thus, every sensor is connected with at least four wires: 3.3
@@ -19,7 +18,7 @@ orange wire on the left is for connecting an interrupt pin of the
 respective sensor.
 
 ![Breadboard circuit with ESP32 and three
-sensors](img/breadboard.jpg){#fig:breadboard }
+sensors](img/breadboard.jpg)
 
 ## Project structure
 
@@ -42,7 +41,7 @@ parts of the ESP-IDF tools.
     |   |-- main.c
     |   |-- queue.c
     |   |-- queue.h
-    |-- report.pdf <- document you are reading
+    |-- README.md <- document you are reading
 
 # Task 1: Designing and writing firmware
 
@@ -51,14 +50,17 @@ parts of the ESP-IDF tools.
 Allow me to introduce the sensors, from left to right:
 
 -   MAX30100, pulse oximetry and heart-rate sensor.
+
     Datasheet:
     <https://www.analog.com/media/en/technical-documentation/data-sheets/max30100.pdf>
 
 -   BMP180, pressure sensor.
+
     Datasheet:
     <https://cdn-shop.adafruit.com/datasheets/BST-BMP180-DS000-09.pdf>
 
 -   SHT3x-DIS, humidity and temperature sensor.
+
     Datasheet:
     <https://sensirion.com/media/documents/213E6A3B/63A5A569/Datasheet_SHT3x_DIS.pdf>
 
@@ -136,8 +138,7 @@ characterists.
 ## RTOS
 
 My design of the firwmare implements two threads, as show in the
-Figure [2](#fig:algorithm){reference-type="ref"
-reference="fig:algorithm"}. `app_main` is the producer thread, and the
+Figure [2](#fig:algorithm). `app_main` is the producer thread, and the
 production takes place inside the `sensors_read()` function of
 `main/i2c.c` file. `collect_queues_task()` of the file `main/queue.c` is
 the consumer thread, created under FreeRTOS. The producer thread is
@@ -161,7 +162,7 @@ to match the required sampling rate, so that the starvation of
 `collect_queues_task()` and situations when queues become full are
 impossible.
 
-![Algorithm flowchart](img/algorithm.jpg){#fig:algorithm}
+![Algorithm flowchart](img/algorithm.jpg)
 
 # Demo
 
